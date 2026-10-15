@@ -1,0 +1,37 @@
+# Environment-specific configuration and credentials
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Flutter and Dart build output
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+coverage/
+
+# Android and iOS local build configuration
+**/.gradle/
+**/local.properties
+**/Generated.xcconfig
+
+# Local databases and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# OS/editor temporary files
+.DS_Store
+*.swp
