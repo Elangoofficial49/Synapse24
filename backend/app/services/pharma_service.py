@@ -200,6 +200,7 @@ class PharmaService:
             alert = SuspiciousActivityAlert(
                 alert_type=AlertType.UNKNOWN_PACKAGE,
                 severity=AlertSeverity.HIGH,
+                triggered_by_scan_id=scan_ev.id,
                 reason=f"Scan of unverified or unregistered package ID: {serial_id}",
                 evidence_json={"raw_data": raw_data, "scanned_by": user.id if user else "anonymous"}
             )

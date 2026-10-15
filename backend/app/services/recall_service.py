@@ -4,7 +4,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from fastapi import HTTPException
 
-from app.models import Recall, Batch, SerializedPackage, User, BatchStatus, PackageStatus, RecallSeverity, RecallStatus
+from app.models import (
+    Batch, BatchStatus, PackageStatus, Product, Recall, RecallSeverity,
+    RecallStatus, SerializedPackage, User, UserRole,
+)
 from app.blockchain.factory import get_blockchain_adapter
 
 class RecallService:
@@ -19,6 +22,18 @@ class RecallService:
         batch = await db.get(Batch, batch_id)
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found")
+        product = await db.get(Product, batch.product_id)
+        if (
+            not product
+            or (
+                user.role != UserRole.ADMIN
+                and product.manufacturer_id != user.organization_id
+            )
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="You can only recall batches manufactured by your organization.",
+            )
 
         # Mark batch as recalled
         batch.status = BatchStatus.RECALLED
@@ -59,4 +74,3 @@ class RecallService:
         await db.commit()
         await db.refresh(recall)
         return recall
-

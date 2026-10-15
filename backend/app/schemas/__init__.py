@@ -16,6 +16,13 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
+class RegistrationOtpRequest(BaseModel):
+    email: EmailStr
+
+class RegistrationOtpVerifyRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(pattern=r"^\d{6}$")
+
 class RegistrationRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=10, max_length=128)
@@ -31,6 +38,14 @@ class RegistrationRequest(BaseModel):
     def validate_password_bcrypt_length(cls, password: str) -> str:
         if len(password.encode("utf-8")) > 72:
             raise ValueError("Password must not exceed 72 UTF-8 bytes")
+        if not any(char.islower() for char in password):
+            raise ValueError("Password must include a lowercase letter")
+        if not any(char.isupper() for char in password):
+            raise ValueError("Password must include an uppercase letter")
+        if not any(char.isdigit() for char in password):
+            raise ValueError("Password must include a number")
+        if not any(not char.isalnum() for char in password):
+            raise ValueError("Password must include a symbol")
         return password
 
 class TokenResponse(BaseModel):
@@ -87,6 +102,14 @@ class OrganizationResponse(ResponseBase):
     contact_email: str
     is_active: bool
     created_at: datetime
+
+class OrganizationPartnerResponse(BaseModel):
+    id: str
+    name: str
+    org_type: OrgType
+    license_number: str
+    address: str
+    contact_email: EmailStr
 
 # Product
 class ProductCreate(BaseModel):
@@ -186,6 +209,27 @@ class ShipmentResponse(ResponseBase):
     notes: Optional[str] = None
     parent_shipment_id: Optional[str] = None
     created_at: datetime
+
+class ShipmentItemDetailResponse(ResponseBase):
+    package_serial_id: str
+    quantity_dispatched: int
+    quantity_received: Optional[int] = None
+    status: str
+
+class ShipmentDisputeDetailResponse(ResponseBase):
+    id: str
+    dispute_reason: str
+    expected_quantity: int
+    actual_quantity: int
+    status: DisputeStatus
+    resolution_notes: Optional[str] = None
+    created_at: datetime
+
+class ShipmentDetailResponse(ShipmentResponse):
+    sender_organization_name: str
+    receiver_organization_name: str
+    items: List[ShipmentItemDetailResponse]
+    disputes: List[ShipmentDisputeDetailResponse]
 
 class ShipmentReceiveRequest(BaseModel):
     actual_quantity_received: int = Field(ge=0)

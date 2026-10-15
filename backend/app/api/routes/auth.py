@@ -1,17 +1,33 @@
+import hashlib
+import hmac
+import secrets
+from datetime import datetime, timedelta
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from app.db.session import get_db
+from app.core.config import settings
 from app.core.security import verify_password, create_access_token, hash_password
 from app.core.permissions import get_current_user, require_roles
-from app.models import OrgType, User, UserRole, Organization
+from app.models import (
+    OrgType, User, UserRole, Organization, RegistrationEmailVerification,
+)
 from app.schemas import (
     LoginRequest, PendingUserResponse, RegistrationRequest,
-    RegistrationResponse, TokenResponse, UserResponse
+    RegistrationResponse, RegistrationOtpRequest, RegistrationOtpVerifyRequest,
+    TokenResponse, UserResponse
 )
+from app.services.email_service import send_registration_otp_email
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+OTP_LIFETIME = timedelta(minutes=10)
+OTP_VERIFIED_LIFETIME = timedelta(minutes=15)
+OTP_RESEND_COOLDOWN = timedelta(minutes=1)
+OTP_MAX_ATTEMPTS = 5
 
 ROLE_BY_ORG_TYPE = {
     OrgType.MANUFACTURER: UserRole.MANUFACTURER,
@@ -22,12 +38,108 @@ ROLE_BY_ORG_TYPE = {
     OrgType.REGULATOR: UserRole.AUDITOR,
 }
 
+def _registration_otp_hash(email: str, code: str) -> str:
+    return hmac.new(
+        settings.SECRET_KEY.encode(),
+        f"{email}:{code}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+@router.post("/registration-otp")
+async def send_registration_otp(
+    request: RegistrationOtpRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    if not settings.BREVO_API_KEY or not settings.BREVO_SENDER_EMAIL:
+        raise HTTPException(
+            status_code=503,
+            detail="Email verification is not configured. Set BREVO_API_KEY and BREVO_SENDER_EMAIL.",
+        )
+
+    email = str(request.email).lower()
+    existing_user = await db.execute(select(User.id).where(User.email == email))
+    if existing_user.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+
+    verification = await db.get(RegistrationEmailVerification, email)
+    now = datetime.utcnow()
+    if verification and now - verification.sent_at < OTP_RESEND_COOLDOWN:
+        raise HTTPException(
+            status_code=429,
+            detail="Please wait before requesting another verification code.",
+        )
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    try:
+        await send_registration_otp_email(email, code)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Brevo could not send the verification email. Please try again.",
+        ) from exc
+
+    if verification is None:
+        verification = RegistrationEmailVerification(email=email)
+        db.add(verification)
+    verification.code_hash = _registration_otp_hash(email, code)
+    verification.expires_at = now + OTP_LIFETIME
+    verification.sent_at = now
+    verification.attempts = 0
+    verification.verified_until = None
+    await db.commit()
+
+    return {"message": "A verification code was sent to your email address."}
+
+
+@router.post("/verify-registration-otp")
+async def verify_registration_otp(
+    request: RegistrationOtpVerifyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    email = str(request.email).lower()
+    verification = await db.get(RegistrationEmailVerification, email)
+    now = datetime.utcnow()
+    if not verification or verification.expires_at <= now:
+        if verification:
+            await db.delete(verification)
+            await db.commit()
+        raise HTTPException(
+            status_code=400,
+            detail="The verification code is invalid or expired. Request a new code.",
+        )
+    if verification.attempts >= OTP_MAX_ATTEMPTS:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many incorrect attempts. Request a new verification code.",
+        )
+    if not hmac.compare_digest(
+        verification.code_hash,
+        _registration_otp_hash(email, request.code),
+    ):
+        verification.attempts += 1
+        await db.commit()
+        if verification.attempts >= OTP_MAX_ATTEMPTS:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many incorrect attempts. Request a new verification code.",
+            )
+        raise HTTPException(status_code=400, detail="The verification code is incorrect.")
+
+    verification.code_hash = ""
+    verification.verified_until = now + OTP_VERIFIED_LIFETIME
+    verification.attempts = 0
+    await db.commit()
+    return {"message": "Email verified successfully."}
+
+
 @router.post("/register", response_model=RegistrationResponse, status_code=202)
 async def register(
     registration: RegistrationRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    existing_user = await db.execute(select(User.id).where(User.email == registration.email))
+    email = str(registration.email).lower()
+    existing_user = await db.execute(select(User.id).where(User.email == email))
     if existing_user.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="An account with this email already exists")
 
@@ -36,6 +148,13 @@ async def register(
     )
     if existing_license.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="An organization with this license number already exists")
+
+    verification = await db.get(RegistrationEmailVerification, email)
+    if not verification or not verification.verified_until or verification.verified_until <= datetime.utcnow():
+        raise HTTPException(
+            status_code=400,
+            detail="Verify your email address before submitting the registration.",
+        )
 
     organization = Organization(
         name=registration.organization_name,
@@ -49,7 +168,7 @@ async def register(
     await db.flush()
 
     user = User(
-        email=registration.email,
+        email=email,
         hashed_password=hash_password(registration.password),
         full_name=registration.full_name,
         organization_id=organization.id,
@@ -57,6 +176,7 @@ async def register(
         is_active=False,
     )
     db.add(user)
+    await db.delete(verification)
     try:
         await db.commit()
     except IntegrityError as exc:

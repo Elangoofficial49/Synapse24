@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"
     CORS_ORIGINS: List[str] = ["*"]
+    BREVO_API_KEY: str = ""
+    BREVO_SENDER_EMAIL: str = ""
+    BREVO_SENDER_NAME: str = "PharmaTrace"
+    DOCUMENT_STORAGE_PATH: str = "./private_documents"
+    DOCUMENT_MAX_SIZE_BYTES: int = 10 * 1024 * 1024
 
     @field_validator("CORS_ORIGINS", mode="before")
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
@@ -42,4 +47,3 @@ class Settings(BaseSettings):
     }
 
 settings = Settings()
-

@@ -68,12 +68,15 @@ class CustodyEventType(str, enum.Enum):
 
 class AlertType(str, enum.Enum):
     REPEATED_SCAN = "repeated_scan"
+    DUPLICATE_SCAN = "duplicate_scan"
     UNAUTHORIZED_SCAN = "unauthorized_scan"
     INVALID_SEQUENCE = "invalid_sequence"
     RECALLED_TRANSFER = "recalled_transfer"
     EXPIRED_SCAN = "expired_scan"
     CONFLICTING_TRANSFER = "conflicting_transfer"
     UNKNOWN_PACKAGE = "unknown_package"
+    CUSTODY_MISMATCH = "custody_mismatch"
+    SUSPICIOUS_REPORT = "suspicious_report"
 
 class AlertSeverity(str, enum.Enum):
     LOW = "low"
@@ -138,6 +141,17 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     organization: Mapped["Organization"] = relationship("Organization", back_populates="users")
 
 
+class RegistrationEmailVerification(Base):
+    __tablename__ = "registration_email_verifications"
+
+    email: Mapped[str] = mapped_column(String(255), primary_key=True)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    verified_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "products"
 
@@ -171,6 +185,19 @@ class Batch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     product: Mapped["Product"] = relationship("Product", back_populates="batches")
     packages: Mapped[List["SerializedPackage"]] = relationship("SerializedPackage", back_populates="batch")
+
+
+class BatchDocument(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "batch_documents"
+
+    batch_id: Mapped[str] = mapped_column(String(36), ForeignKey("batches.id"), index=True, nullable=False)
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), index=True, nullable=False)
+    uploaded_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    stored_filename: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    content_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class SerializedPackage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -353,4 +380,3 @@ class LedgerTransactionReference(Base, UUIDPrimaryKeyMixin):
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-

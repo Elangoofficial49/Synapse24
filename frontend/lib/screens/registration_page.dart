@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import '../core/theme.dart';
 import '../services/api_service.dart';
@@ -20,6 +21,7 @@ class _RegistrationPageState extends State<RegistrationPage> {
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
   final _email = TextEditingController();
+  final _otpCode = TextEditingController();
   final _password = TextEditingController();
   final _organizationName = TextEditingController();
   final _licenseNumber = TextEditingController();
@@ -29,11 +31,14 @@ class _RegistrationPageState extends State<RegistrationPage> {
   String? _errorMessage;
   bool _isLoading = false;
   bool _submitted = false;
+  String? _otpSentFor;
+  bool _otpVerified = false;
 
   @override
   void dispose() {
     _name.dispose();
     _email.dispose();
+    _otpCode.dispose();
     _password.dispose();
     _organizationName.dispose();
     _licenseNumber.dispose();
@@ -44,6 +49,11 @@ class _RegistrationPageState extends State<RegistrationPage> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
+    if (!_otpVerified || _otpSentFor != _email.text.trim().toLowerCase()) {
+      setState(() =>
+          _errorMessage = 'Verify your sign-in email before registering.');
+      return;
+    }
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -51,7 +61,7 @@ class _RegistrationPageState extends State<RegistrationPage> {
     try {
       await apiService.register({
         'full_name': _name.text.trim(),
-        'email': _email.text.trim(),
+        'email': _email.text.trim().toLowerCase(),
         'password': _password.text,
         'organization_name': _organizationName.text.trim(),
         'organization_type': _organizationType,
@@ -62,7 +72,8 @@ class _RegistrationPageState extends State<RegistrationPage> {
       if (mounted) setState(() => _submitted = true);
     } catch (error) {
       if (mounted) {
-        setState(() => _errorMessage = 'Registration failed: $error');
+        setState(
+            () => _errorMessage = 'Registration failed: ${_errorText(error)}');
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -71,6 +82,88 @@ class _RegistrationPageState extends State<RegistrationPage> {
 
   String? _required(String? value) =>
       value == null || value.trim().isEmpty ? 'Required' : null;
+
+  String? _validateEmail(String? value) {
+    if (value == null || value.trim().isEmpty) return 'Required';
+    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(value.trim())) {
+      return 'Enter a valid email address';
+    }
+    return null;
+  }
+
+  String _errorText(Object error) {
+    if (error is DioException) {
+      final responseData = error.response?.data;
+      if (responseData is Map && responseData['detail'] is String) {
+        return responseData['detail'] as String;
+      }
+      return error.message ?? 'Could not connect to the server.';
+    }
+    return error.toString();
+  }
+
+  void _onEmailChanged(String value) {
+    if (_otpSentFor != null && _otpSentFor != value.trim().toLowerCase()) {
+      setState(() {
+        _otpSentFor = null;
+        _otpVerified = false;
+        _otpCode.clear();
+      });
+    }
+  }
+
+  Future<void> _sendOtp() async {
+    final email = _email.text.trim().toLowerCase();
+    final validationError = _validateEmail(email);
+    if (validationError != null) {
+      setState(() => _errorMessage = validationError);
+      return;
+    }
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      await apiService.sendRegistrationOtp(email);
+      if (mounted) {
+        setState(() {
+          _otpSentFor = email;
+          _otpVerified = false;
+          _otpCode.clear();
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _errorMessage = _errorText(error));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _verifyOtp() async {
+    final email = _email.text.trim().toLowerCase();
+    if (_otpSentFor != email) {
+      setState(() =>
+          _errorMessage = 'Send a verification code to this email first.');
+      return;
+    }
+    if (!RegExp(r'^\d{6}$').hasMatch(_otpCode.text.trim())) {
+      setState(
+          () => _errorMessage = 'Enter the six-digit code from your email.');
+      return;
+    }
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      await apiService.verifyRegistrationOtp(email, _otpCode.text.trim());
+      if (mounted) setState(() => _otpVerified = true);
+    } catch (error) {
+      if (mounted) setState(() => _errorMessage = _errorText(error));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -149,16 +242,61 @@ class _RegistrationPageState extends State<RegistrationPage> {
               controller: _email,
               keyboardType: TextInputType.emailAddress,
               decoration: const InputDecoration(labelText: 'Sign-in email'),
-              validator: _required),
+              onChanged: _onEmailChanged,
+              validator: _validateEmail),
+          const SizedBox(height: 12),
+          if (_otpSentFor == null)
+            OutlinedButton.icon(
+              onPressed: _isLoading ? null : _sendOtp,
+              icon: const Icon(Icons.mail_outline),
+              label: const Text('Send email verification code'),
+            )
+          else ...[
+            TextFormField(
+              controller: _otpCode,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              decoration: InputDecoration(
+                labelText: 'Email verification code',
+                helperText: _otpVerified
+                    ? 'Email verified'
+                    : 'Enter the six-digit code sent to $_otpSentFor',
+                suffixIcon: _otpVerified
+                    ? const Icon(Icons.verified, color: AppTheme.deepTeal)
+                    : null,
+              ),
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _isLoading || _otpVerified ? null : _verifyOtp,
+                    child: const Text('Verify code'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                TextButton(
+                  onPressed: _isLoading ? null : _sendOtp,
+                  child: const Text('Resend code'),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 12),
           TextFormField(
               controller: _password,
               obscureText: true,
-              decoration: const InputDecoration(
-                  labelText: 'Password (at least 10 characters)'),
+              decoration:
+                  const InputDecoration(labelText: 'Password (10+ characters)'),
               validator: (value) {
                 if (value == null || value.length < 10) {
                   return 'Use at least 10 characters';
+                }
+                if (!RegExp(r'[a-z]').hasMatch(value) ||
+                    !RegExp(r'[A-Z]').hasMatch(value) ||
+                    !RegExp(r'\d').hasMatch(value) ||
+                    !RegExp(r'[^A-Za-z0-9]').hasMatch(value)) {
+                  return 'Use uppercase and lowercase letters, a number, and a symbol';
                 }
                 return null;
               }),
@@ -216,7 +354,7 @@ class _RegistrationPageState extends State<RegistrationPage> {
               validator: _required),
           const SizedBox(height: 20),
           ElevatedButton(
-            onPressed: _isLoading ? null : _submit,
+            onPressed: _isLoading || !_otpVerified ? null : _submit,
             child: _isLoading
                 ? const SizedBox(
                     width: 20,

@@ -7,8 +7,9 @@ from fastapi import HTTPException, status
 
 from app.models import (
     Shipment, ShipmentItem, SerializedPackage, CustodyEvent, Dispute, CorrectionEvent,
-    SuspiciousActivityAlert, User, Organization, ShipmentStatus, PackageStatus,
-    CustodyEventType, AlertType, AlertSeverity, DisputeStatus
+    SuspiciousActivityAlert, User, UserRole, Organization, ShipmentStatus,
+    PackageStatus, QRScanEvent, CustodyEventType, AlertType, AlertSeverity,
+    DisputeStatus
 )
 from app.blockchain.factory import get_blockchain_adapter
 
@@ -38,6 +39,15 @@ class CustodyService:
             raise HTTPException(
                 status_code=400,
                 detail="One or more packages do not exist or are not in current custodian inventory"
+            )
+
+        if any(
+            package.status not in (PackageStatus.MANUFACTURED, PackageStatus.RECEIVED)
+            for package in packages
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="One or more packages are not available for transfer.",
             )
 
         # Check for recalled/quarantined packages
@@ -126,14 +136,75 @@ class CustodyService:
                 detail=f"Cannot receive shipment in status: {shipment.status.value}"
             )
 
-        shipment.received_quantity = actual_quantity_received
-        shipment.receipt_timestamp = datetime.utcnow()
+        if (
+            actual_quantity_received != shipment.declared_quantity
+            and not (notes and notes.strip())
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="A reason is required when the received quantity differs from the declared quantity.",
+            )
+
+        if (
+            receiver.role == UserRole.DISTRIBUTOR
+            and scanned_serial_ids is None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Scan and verify each received package before confirming receipt.",
+            )
 
         # Fetch shipment items
         stmt = select(ShipmentItem, SerializedPackage).join(
             SerializedPackage, ShipmentItem.package_id == SerializedPackage.id
         ).where(ShipmentItem.shipment_id == shipment.id)
         items = (await db.execute(stmt)).all()
+        if scanned_serial_ids is not None:
+            if len(scanned_serial_ids) != len(set(scanned_serial_ids)):
+                raise HTTPException(
+                    status_code=400,
+                    detail="A package cannot be scanned more than once for the same receipt.",
+                )
+            shipment_serial_ids = {pkg.package_serial_id for _, pkg in items}
+            if not set(scanned_serial_ids).issubset(shipment_serial_ids):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Scanned packages must belong to this shipment.",
+                )
+            if len(scanned_serial_ids) != actual_quantity_received:
+                raise HTTPException(
+                    status_code=400,
+                    detail="The received quantity must match the number of verified package scans.",
+                )
+            accepted_serial_ids = set(scanned_serial_ids)
+            if scanned_serial_ids:
+                package_ids = {
+                    pkg.id
+                    for _, pkg in items
+                    if pkg.package_serial_id in accepted_serial_ids
+                }
+                verified_scan_result = await db.execute(
+                    select(QRScanEvent.package_id)
+                    .where(
+                        QRScanEvent.package_id.in_(package_ids),
+                        QRScanEvent.scanned_by == receiver.id,
+                        QRScanEvent.is_valid.is_(True),
+                    )
+                    .distinct()
+                )
+                if {
+                    package_id
+                    for (package_id,) in verified_scan_result.all()
+                } != package_ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Verify each received package QR code before confirming receipt.",
+                    )
+        else:
+            accepted_serial_ids = None
+
+        shipment.received_quantity = actual_quantity_received
+        shipment.receipt_timestamp = datetime.utcnow()
 
         adapter = get_blockchain_adapter()
         discrepancy_detected = actual_quantity_received != shipment.declared_quantity
@@ -188,7 +259,12 @@ class CustodyService:
         # Update package custodianship for accepted packages
         # If partial, we transfer the first actual_quantity_received packages unless scanned specified
         for i, (item, pkg) in enumerate(items):
-            if i < actual_quantity_received:
+            accepted = (
+                pkg.package_serial_id in accepted_serial_ids
+                if accepted_serial_ids is not None
+                else i < actual_quantity_received
+            )
+            if accepted:
                 pkg.status = PackageStatus.RECEIVED
                 pkg.current_custodian_org_id = receiver.organization_id
                 item.quantity_received = 1
@@ -299,4 +375,3 @@ class CustodyService:
         })
         await db.commit()
         return created_children
-

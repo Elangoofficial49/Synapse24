@@ -31,6 +31,57 @@ async def list_alerts(
     result = await db.execute(stmt.order_by(SuspiciousActivityAlert.created_at.desc()))
     return result.scalars().all()
 
+
+@router.post("/alerts/report")
+async def report_suspicious_alert(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models import AlertSeverity, AlertType
+    package_serial_id = payload.get("package_serial_id", "").strip()
+    reason = payload.get("reason", "").strip()
+    severity_str = payload.get("severity", "high").strip().lower()
+    if not reason:
+        raise HTTPException(status_code=400, detail="Reason is required.")
+
+    severity_map = {
+        "low": AlertSeverity.LOW,
+        "medium": AlertSeverity.MEDIUM,
+        "high": AlertSeverity.HIGH,
+        "critical": AlertSeverity.CRITICAL,
+    }
+    severity = severity_map.get(severity_str, AlertSeverity.HIGH)
+
+    package_id = None
+    if package_serial_id:
+        from app.models import SerializedPackage
+        p_res = await db.execute(
+            select(SerializedPackage.id).where(
+                SerializedPackage.package_serial_id == package_serial_id
+            )
+        )
+        package_id = p_res.scalar_one_or_none()
+
+    alert = SuspiciousActivityAlert(
+        alert_type=AlertType.SUSPICIOUS_REPORT if hasattr(AlertType, "SUSPICIOUS_REPORT") else AlertType.UNKNOWN_PACKAGE,
+        severity=severity,
+        package_id=package_id,
+        reason=f"Reported by {current_user.full_name}: {reason}" + (f" (Serial: {package_serial_id})" if package_serial_id else ""),
+        evidence_json={"reporter_user_id": current_user.id, "reporter_org_id": current_user.organization_id},
+        review_status=AlertReviewStatus.OPEN,
+    )
+    db.add(alert)
+    await db.commit()
+    await db.refresh(alert)
+    return {
+        "status": "success",
+        "alert_id": alert.id,
+        "severity": alert.severity.value,
+        "review_status": alert.review_status.value,
+        "created_at": alert.created_at.isoformat(),
+    }
+
 @router.put("/alerts/{alert_id}", response_model=AlertResponse)
 async def update_alert(
     alert_id: str,

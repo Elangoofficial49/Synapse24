@@ -15,6 +15,7 @@ from app.api.routes.shipments import router as shipments_router
 from app.api.routes.compliance import router as compliance_router
 from app.api.routes.analytics import router as analytics_router
 from app.api.routes.organizations import router as orgs_router
+from app.api.routes.manufacturer import router as manufacturer_router
 
 setup_logging()
 
@@ -59,4 +60,4 @@ app.include_router(shipments_router, prefix=settings.API_V1_STR)
 app.include_router(compliance_router, prefix=settings.API_V1_STR)
 app.include_router(analytics_router, prefix=settings.API_V1_STR)
 app.include_router(orgs_router, prefix=settings.API_V1_STR)
-
+app.include_router(manufacturer_router, prefix=settings.API_V1_STR)

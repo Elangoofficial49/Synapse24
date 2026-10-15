@@ -1,3 +1,6 @@
+from datetime import date, timedelta
+from uuid import uuid4
+
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
@@ -77,8 +80,35 @@ async def test_two_party_custody_transfer_and_discrepancy():
         dist_user = dist_res.json()["user"]
         dist_headers = {"Authorization": f"Bearer {dist_token}"}
 
-        # 1. Manufacturer creates and dispatches shipment of 5 packages
-        pkg_ids = [f"PT-BATCH-2024-AMX01-{i:04d}" for i in range(11, 16)]
+        # 1. Manufacturer creates and serializes a batch for the shipment
+        suffix = uuid4().hex[:10].upper()
+        product_res = await ac.post("/api/v1/products", json={
+            "name": "Custody Test Medicine",
+            "generic_name": "Custody Test Ingredient",
+            "product_code": f"CUSTODY-{suffix}",
+            "dosage_form": "Tablet",
+            "strength": "10 mg",
+        }, headers=mfr_headers)
+        assert product_res.status_code == 200, product_res.text
+        batch_res = await ac.post("/api/v1/batches", json={
+            "product_id": product_res.json()["id"],
+            "batch_number": f"CUSTODY-{suffix}",
+            "manufacturing_date": date.today().isoformat(),
+            "expiry_date": (date.today() + timedelta(days=365)).isoformat(),
+            "quantity_manufactured": 5,
+        }, headers=mfr_headers)
+        assert batch_res.status_code == 200, batch_res.text
+        packages_res = await ac.post(
+            f"/api/v1/batches/{batch_res.json()['id']}/generate-packages",
+            json={"batch_id": batch_res.json()["id"], "count": 5},
+            headers=mfr_headers,
+        )
+        assert packages_res.status_code == 200, packages_res.text
+        pkg_ids = [
+            package["package_serial_id"] for package in packages_res.json()
+        ]
+
+        # 2. Manufacturer dispatches the five serialized packages
         create_res = await ac.post("/api/v1/shipments", json={
             "receiver_org_id": dist_user["organization_id"],
             "package_serial_ids": pkg_ids,
@@ -90,9 +120,18 @@ async def test_two_party_custody_transfer_and_discrepancy():
         assert shipment["declared_quantity"] == 5
         assert shipment["status"] == "dispatched"
 
-        # 2. Distributor confirms receipt of only 4 packages (discrepancy demo)
+        # 3. Distributor verifies and confirms four packages
+        for package_id in pkg_ids[:4]:
+            scan = await ac.post(
+                "/api/v1/verify",
+                json={"raw_data": package_id},
+                headers=dist_headers,
+            )
+            assert scan.status_code == 200
+            assert scan.json()["is_valid"] is True
         rcv_res = await ac.post(f"/api/v1/shipments/{shipment_id}/receive", json={
             "actual_quantity_received": 4,
+            "scanned_package_serial_ids": pkg_ids[:4],
             "notes": "Discrepancy: Box seal damaged, only 4 units present."
         }, headers=dist_headers)
         assert rcv_res.status_code == 200

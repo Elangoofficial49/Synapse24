@@ -48,6 +48,20 @@ synapse24/
 
 ## Quickstart Instructions
 
+### Configure private environment files
+
+Copy the ignored templates before starting the services:
+
+```powershell
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+if (!(Test-Path backend\.env)) { Copy-Item backend\.env.example backend\.env }
+```
+
+The root `.env` configures PostgreSQL for Docker Compose. `backend\.env` holds
+the backend signing key and Brevo credentials; the local Python backend uses
+SQLite by default. Replace the placeholder Brevo settings with your verified
+Brevo sender details. Never commit either `.env` file.
+
 ### 1. Run the Python Backend
 
 ```powershell
@@ -65,10 +79,29 @@ uvicorn app.main:app --reload --port 8000
 - Swagger OpenAPI documentation: `http://localhost:8000/docs`
 - Health check endpoint: `http://localhost:8000/health`
 
+### Configure email verification for registration
+
+Organization registration requires verifying the sign-in email with a six-digit
+code sent through the Brevo SMTP API. Set these variables in `backend/.env`
+(keep this file private and never commit the API key):
+
+```dotenv
+BREVO_API_KEY=your_brevo_api_key
+BREVO_SENDER_EMAIL=verified-sender@example.com
+BREVO_SENDER_NAME=PharmaTrace
+```
+
+The sender address must be verified in Brevo. Restart the backend after adding
+the settings. Codes expire after 10 minutes, are limited to five attempts, and
+must be verified before the registration can be submitted. Registration
+passwords must be at least 10 characters and include uppercase and lowercase
+letters, a number, and a symbol.
+
 ### Role-based traceability
 
-- **Manufacturer:** Sign in and open **Manufacturing & QR** to register products, create batches, and generate printable package QR codes. QR generation is limited to the manufacturer's own batches.
+- **Manufacturer:** Sign in and open **Manufacturer dashboard** for batch overview and inventory, product and batch registration, QR generation, distributor verification details, dispatches, pending receipts, batch verification, recalls, audit history, documents, and alerts. Dispatch and recall actions are restricted to the manufacturer's own inventory. Quality certificates and test reports can be uploaded as PDF, PNG, or JPEG files up to 10 MB and are stored off-chain in the private document directory.
 - **Distributor, transporter, pharmacy, and hospital users:** Open **Scan QR** in the console, or use the public scanner on the landing page, to view package details and custody tracking. Camera scanning requires camera permission; a package URL or serial ID can also be entered manually.
+- **Distributors:** The **Distributor dashboard** provides incoming and outgoing shipment summaries, QR-scanned receipt confirmation, inventory, a verified pharmacy directory, pharmacy orders and dispatches, pending pharmacy receipts, transfer history, batch verification, recall/quarantine status, suspicious scan reports, and notifications. Pharmacy orders select serialized package quantities from available inventory and record the receiving pharmacy in the custody transfer. Scanned packages are verified against the selected shipment before receipt is confirmed; discrepancies require a reason and are recorded with the receipt transaction. The separate **Wholesaler partners** dashboard remains available for distributor-to-distributor transfers.
 - **New organizations:** Select **Register** on the landing page or **Register a company account** on the sign-in screen. The account remains pending until a system administrator approves the organization. Administrators can review requests under **Account approvals**.
 
 ### 2. Run the Flutter Frontend
