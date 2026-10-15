@@ -33,6 +33,7 @@ class _RegistrationPageState extends State<RegistrationPage> {
   bool _submitted = false;
   String? _otpSentFor;
   bool _otpVerified = false;
+  bool _obscurePassword = true;
 
   @override
   void dispose() {
@@ -285,9 +286,24 @@ class _RegistrationPageState extends State<RegistrationPage> {
           const SizedBox(height: 12),
           TextFormField(
               controller: _password,
-              obscureText: true,
-              decoration:
-                  const InputDecoration(labelText: 'Password (10+ characters)'),
+              obscureText: _obscurePassword,
+              decoration: InputDecoration(
+                labelText: 'Password (10+ characters)',
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _obscurePassword
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
+                    color: AppTheme.textSecondary,
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      _obscurePassword = !_obscurePassword;
+                    });
+                  },
+                  tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+                ),
+              ),
               validator: (value) {
                 if (value == null || value.length < 10) {
                   return 'Use at least 10 characters';

@@ -2,8 +2,12 @@ import 'package:flutter/material.dart';
 
 import '../core/theme.dart';
 import '../services/api_service.dart';
+import '../services/offline_receipt_service.dart';
+import '../widgets/dispute_investigation_dialog.dart';
+import '../widgets/offline_sync_panel.dart';
 import '../widgets/package_verification_card.dart';
 import '../widgets/qr_scanner_dialog.dart';
+import '../widgets/recall_impact_simulator_view.dart';
 
 class PharmacyTools extends StatefulWidget {
   final int initialTabIndex;
@@ -14,7 +18,9 @@ class PharmacyTools extends StatefulWidget {
   State<PharmacyTools> createState() => _PharmacyToolsState();
 }
 
-class _PharmacyToolsState extends State<PharmacyTools> {
+class _PharmacyToolsState extends State<PharmacyTools>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
   bool _loading = true;
   String? _organizationId;
   List<dynamic> _shipments = [];
@@ -31,11 +37,28 @@ class _PharmacyToolsState extends State<PharmacyTools> {
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(
+      length: 13,
+      vsync: this,
+      initialIndex: widget.initialTabIndex.clamp(0, 12),
+    );
     _load();
   }
 
   @override
+  void didUpdateWidget(PharmacyTools oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialTabIndex != widget.initialTabIndex) {
+      final target = widget.initialTabIndex.clamp(0, 12);
+      if (_tabController.index != target) {
+        _tabController.animateTo(target);
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    _tabController.dispose();
     _verificationController.dispose();
     super.dispose();
   }
@@ -45,16 +68,51 @@ class _PharmacyToolsState extends State<PharmacyTools> {
     try {
       final dashboard = await apiService.getPharmacyDashboard();
       if (!mounted) return;
+      final rawShipments =
+          List<dynamic>.from(dashboard['shipments'] as List? ?? []);
+      final rawIncoming =
+          List<dynamic>.from(dashboard['incoming_shipments'] as List? ?? []);
+      final rawInventory =
+          List<dynamic>.from(dashboard['inventory'] as List? ?? []);
+      final rawRecalls =
+          List<dynamic>.from(dashboard['recalls'] as List? ?? []);
+      final rawAlerts = List<dynamic>.from(dashboard['alerts'] as List? ?? []);
+      final rawDisputes =
+          List<dynamic>.from(dashboard['disputes'] as List? ?? []);
+      final rawNotifications =
+          List<dynamic>.from(dashboard['notifications'] as List? ?? []);
+
+      int compareDesc(dynamic a, dynamic b) {
+        final aTime = (a['created_at'] ??
+                a['dispatch_timestamp'] ??
+                a['manufacturing_date'] ??
+                '')
+            .toString();
+        final bTime = (b['created_at'] ??
+                b['dispatch_timestamp'] ??
+                b['manufacturing_date'] ??
+                '')
+            .toString();
+        return bTime.compareTo(aTime);
+      }
+
+      rawShipments.sort(compareDesc);
+      rawIncoming.sort(compareDesc);
+      rawInventory.sort(compareDesc);
+      rawRecalls.sort(compareDesc);
+      rawAlerts.sort(compareDesc);
+      rawDisputes.sort(compareDesc);
+      rawNotifications.sort(compareDesc);
+
       setState(() {
         _organizationId = dashboard['organization_id']?.toString();
-        _shipments = dashboard['shipments'] as List<dynamic>? ?? [];
-        _incomingShipments =
-            dashboard['incoming_shipments'] as List<dynamic>? ?? [];
-        _inventory = dashboard['inventory'] as List<dynamic>? ?? [];
-        _recalls = dashboard['recalls'] as List<dynamic>? ?? [];
-        _alerts = dashboard['alerts'] as List<dynamic>? ?? [];
-        _disputes = dashboard['disputes'] as List<dynamic>? ?? [];
-        _notifications = dashboard['notifications'] as List<dynamic>? ?? [];
+        _shipments = rawShipments;
+        _incomingShipments = rawIncoming;
+        _inventory = rawInventory;
+        _recalls = rawRecalls;
+        _alerts = rawAlerts;
+        _disputes = rawDisputes;
+        _notifications = rawNotifications;
       });
     } catch (error) {
       if (mounted) _showError('Unable to load pharmacy dashboard: $error');
@@ -248,16 +306,60 @@ class _PharmacyToolsState extends State<PharmacyTools> {
             TextButton(
                 onPressed: () => Navigator.pop(dialogContext),
                 child: const Text('Cancel')),
+            OutlinedButton.icon(
+              onPressed: scannedSerials.isEmpty && !noPackagesReceived
+                  ? null
+                  : () async {
+                      final qty =
+                          noPackagesReceived ? 0 : scannedSerials.length;
+                      final declared =
+                          (shipment['declared_quantity'] as num).toInt();
+                      final reason = reasonController.text.trim();
+                      if (qty != declared && reason.isEmpty) {
+                        _showError('A reason is required for any discrepancy.');
+                        return;
+                      }
+                      final messenger = ScaffoldMessenger.of(context);
+                      Navigator.pop(dialogContext);
+                      final receiptRecord =
+                          await OfflineReceiptService.saveOfflineReceipt(
+                        shipmentId: shipment['id'].toString(),
+                        shipmentReference:
+                            shipment['shipment_reference'].toString(),
+                        actualQuantityReceived: qty,
+                        declaredQuantity: declared,
+                        notes: reason.isEmpty ? null : reason,
+                        scannedPackageSerialIds: scannedSerials.toList(),
+                      );
+                      messenger.showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'Receipt queued offline [Key: ${receiptRecord['idempotency_key'].toString().substring(0, 8)}...]. Sync when reconnected.',
+                          ),
+                          backgroundColor: AppTheme.deepTeal,
+                        ),
+                      );
+                    },
+              icon: const Icon(Icons.cloud_off_outlined),
+              label: const Text('Save Offline'),
+            ),
             ElevatedButton(
-              onPressed: () => Navigator.pop(
-                dialogContext,
-                (
-                  scannedSerials.toList(growable: false),
-                  reasonController.text.trim().isEmpty
-                      ? null
-                      : reasonController.text.trim()
-                ),
-              ),
+              onPressed: () {
+                final qty = noPackagesReceived ? 0 : scannedSerials.length;
+                final declared = (shipment['declared_quantity'] as num).toInt();
+                final reason = reasonController.text.trim();
+                if (qty != declared && reason.isEmpty) {
+                  _showError('A reason is required for any discrepancy.');
+                  return;
+                }
+                Navigator.pop(
+                  dialogContext,
+                  (
+                    scannedSerials.toList(growable: false),
+                    reason.isEmpty ? null : reason
+                  ),
+                );
+              },
               child: const Text('Submit Confirmation'),
             ),
           ],
@@ -286,6 +388,9 @@ class _PharmacyToolsState extends State<PharmacyTools> {
             : 'Discrepancy recorded and flagged on ledger (${result['tx_reference'] ?? 'logged'}).',
       );
       await _load();
+      if (mounted) {
+        _tabController.animateTo(4);
+      }
     } catch (error) {
       if (mounted) _showError('Could not confirm delivery: $error');
     }
@@ -362,6 +467,9 @@ class _PharmacyToolsState extends State<PharmacyTools> {
         });
       });
       await _load();
+      if (mounted) {
+        _tabController.animateTo(8);
+      }
     } catch (error) {
       if (mounted) _showError('Failed to record dispensing: $error');
     } finally {
@@ -688,6 +796,40 @@ class _PharmacyToolsState extends State<PharmacyTools> {
               child: ListTile(title: Text('No past receipt records found.')))
         else
           ...received.map((s) => _shipmentCard(s)),
+        if (_disputes.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          const Text('Receipt Quantity Disputes',
+              style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.warningAmber)),
+          const SizedBox(height: 12),
+          ..._disputes.map((dispute) => Card(
+                child: ListTile(
+                  leading: const Icon(
+                    Icons.gavel_outlined,
+                    color: AppTheme.warningAmber,
+                  ),
+                  title: Text(dispute['shipment_reference'].toString()),
+                  subtitle: Text(
+                    '${dispute['dispute_reason']}\n'
+                    'Expected ${dispute['expected_quantity']} · '
+                    'Received ${dispute['actual_quantity']} · '
+                    '${dispute['status']}',
+                  ),
+                  isThreeLine: true,
+                  trailing: ElevatedButton.icon(
+                    onPressed: () => DisputeInvestigationDialog.show(
+                      context,
+                      dispute: Map<String, dynamic>.from(dispute as Map),
+                      onUpdated: _load,
+                    ),
+                    icon: const Icon(Icons.search, size: 16),
+                    label: const Text('Investigate'),
+                  ),
+                ),
+              )),
+        ],
       ],
     );
   }
@@ -983,10 +1125,109 @@ class _PharmacyToolsState extends State<PharmacyTools> {
                 subtitle: Text(
                     'Reason: ${r['recall_reason']}\nSeverity: ${r['severity']?.toString().toUpperCase()} · Status: ${r['status']?.toString().toUpperCase()}'),
                 isThreeLine: true,
+                trailing: Wrap(
+                  spacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: () => RecallImpactSimulatorView.show(
+                        context,
+                        batchId: r['batch_id'].toString(),
+                      ),
+                      icon: const Icon(Icons.account_tree_outlined, size: 16),
+                      label: const Text('Simulator'),
+                    ),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.errorRed,
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () => _showPharmacyQuarantineDialog(r),
+                      icon: const Icon(Icons.gpp_bad, size: 16),
+                      label: const Text('Quarantine'),
+                    ),
+                  ],
+                ),
               ),
             )),
       ],
     );
+  }
+
+  Future<void> _showPharmacyQuarantineDialog(dynamic recall) async {
+    final qtyController = TextEditingController(text: '0');
+    final notesController = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Pharmacy Quarantine · Batch ${recall['batch_number']}'),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Product: ${recall['product_name']}'),
+              Text('Reason: ${recall['recall_reason']}'),
+              const SizedBox(height: 16),
+              TextField(
+                controller: qtyController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Quarantined Pharmacy Stock (units locked)',
+                  prefixIcon: Icon(Icons.inventory_2_outlined),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: notesController,
+                minLines: 2,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: 'Quarantine procedure notes',
+                  prefixIcon: Icon(Icons.notes),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.errorRed,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Confirm Quarantine & Lockdown'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      final qty = int.tryParse(qtyController.text.trim()) ?? 0;
+      final notes = notesController.text.trim();
+      try {
+        await apiService.acknowledgeRecall(
+          recall['id'].toString(),
+          quarantinedQuantity: qty,
+          responseNotes: notes.isEmpty
+              ? 'Quarantined in pharmacy biohazard storage'
+              : notes,
+        );
+        if (mounted) {
+          _showSuccess(
+              'Recall quarantine confirmation recorded on blockchain.');
+          await _load();
+        }
+      } catch (e) {
+        if (mounted) _showError('Failed to acknowledge recall: $e');
+      }
+    }
+    qtyController.dispose();
+    notesController.dispose();
   }
 
   // ==========================================
@@ -1322,60 +1563,63 @@ class _PharmacyToolsState extends State<PharmacyTools> {
       Tab(text: 'Notifications', icon: Icon(Icons.notifications_outlined)),
     ];
 
-    return DefaultTabController(
-      key: ValueKey<int>(widget.initialTabIndex),
-      length: tabs.length,
-      initialIndex: widget.initialTabIndex.clamp(0, tabs.length - 1),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'Pharmacy Dashboard',
-                    style: TextStyle(
-                        fontSize: 21,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.navy),
-                  ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Pharmacy Dashboard',
+                  style: TextStyle(
+                      fontSize: 21,
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.navy),
                 ),
-                OutlinedButton.icon(
-                  onPressed: _load,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Refresh'),
-                ),
-              ],
-            ),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => OfflineSyncPanel.show(context, _load),
+                icon: const Icon(Icons.sync_problem_outlined),
+                label: const Text('Offline Sync'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: _load,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Refresh'),
+              ),
+            ],
           ),
-          const TabBar(
-            isScrollable: true,
-            tabAlignment: TabAlignment.start,
-            tabs: tabs,
+        ),
+        TabBar(
+          controller: _tabController,
+          isScrollable: true,
+          tabAlignment: TabAlignment.start,
+          tabs: tabs,
+        ),
+        Expanded(
+          child: TabBarView(
+            controller: _tabController,
+            children: [
+              _buildOverviewTab(),
+              _buildIncomingDeliveriesTab(),
+              _buildScanVerifyTab(),
+              _buildConfirmReceiptTab(),
+              _buildMedicineInventoryTab(),
+              _buildBatchDetailsTab(),
+              _buildExpiryManagementTab(),
+              _buildRecallAlertsTab(),
+              _buildDispensingRecordsTab(),
+              _buildSuspiciousProductReportTab(),
+              _buildSupplierHistoryTab(),
+              _buildAuditHistoryTab(),
+              _buildNotificationsTab(),
+            ],
           ),
-          Expanded(
-            child: TabBarView(
-              children: [
-                _buildOverviewTab(),
-                _buildIncomingDeliveriesTab(),
-                _buildScanVerifyTab(),
-                _buildConfirmReceiptTab(),
-                _buildMedicineInventoryTab(),
-                _buildBatchDetailsTab(),
-                _buildExpiryManagementTab(),
-                _buildRecallAlertsTab(),
-                _buildDispensingRecordsTab(),
-                _buildSuspiciousProductReportTab(),
-                _buildSupplierHistoryTab(),
-                _buildAuditHistoryTab(),
-                _buildNotificationsTab(),
-              ],
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

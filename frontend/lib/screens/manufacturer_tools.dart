@@ -1,10 +1,12 @@
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../core/theme.dart';
 import '../services/api_service.dart';
+import '../widgets/recall_impact_simulator_view.dart';
 
 class ManufacturerTools extends StatefulWidget {
   final VoidCallback onVerifyBatch;
@@ -20,7 +22,9 @@ class ManufacturerTools extends StatefulWidget {
   State<ManufacturerTools> createState() => _ManufacturerToolsState();
 }
 
-class _ManufacturerToolsState extends State<ManufacturerTools> {
+class _ManufacturerToolsState extends State<ManufacturerTools>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
   List<dynamic> _products = [];
   List<dynamic> _batches = [];
   List<dynamic> _packages = [];
@@ -38,7 +42,29 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(
+      length: 12,
+      vsync: this,
+      initialIndex: widget.initialTabIndex.clamp(0, 11),
+    );
     _load();
+  }
+
+  @override
+  void didUpdateWidget(ManufacturerTools oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialTabIndex != widget.initialTabIndex) {
+      final target = widget.initialTabIndex.clamp(0, 11);
+      if (_tabController.index != target) {
+        _tabController.animateTo(target);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -51,18 +77,54 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
       ]);
       if (!mounted) return;
       final dashboard = results[0] as Map<String, dynamic>;
+      final rawBatches =
+          List<dynamic>.from(dashboard['batches'] as List? ?? []);
+      final rawReceipts =
+          List<dynamic>.from(dashboard['pending_receipts'] as List? ?? []);
+      final rawRecalls =
+          List<dynamic>.from(dashboard['recalls'] as List? ?? []);
+      final rawAudit =
+          List<dynamic>.from(dashboard['audit_history'] as List? ?? []);
+      final rawDocs = List<dynamic>.from(dashboard['documents'] as List? ?? []);
+      final rawNotifs =
+          List<dynamic>.from(dashboard['notifications'] as List? ?? []);
+      final rawProducts = List<dynamic>.from(results[1] as List? ?? []);
+      final rawPackages = List<dynamic>.from(results[2] as List? ?? []);
+
+      int compareDesc(dynamic a, dynamic b) {
+        final aTime = (a['created_at'] ??
+                a['manufacturing_date'] ??
+                a['dispatch_timestamp'] ??
+                '')
+            .toString();
+        final bTime = (b['created_at'] ??
+                b['manufacturing_date'] ??
+                b['dispatch_timestamp'] ??
+                '')
+            .toString();
+        return bTime.compareTo(aTime);
+      }
+
+      rawBatches.sort(compareDesc);
+      rawProducts.sort(compareDesc);
+      rawPackages.sort(compareDesc);
+      rawReceipts.sort(compareDesc);
+      rawRecalls.sort(compareDesc);
+      rawAudit.sort(compareDesc);
+      rawNotifs.sort(compareDesc);
+
       setState(() {
         _manufacturer = dashboard['manufacturer'] as Map<String, dynamic>?;
         _summary = Map<String, dynamic>.from(dashboard['summary'] as Map);
-        _batches = dashboard['batches'] as List<dynamic>;
+        _batches = rawBatches;
         _distributors = dashboard['distributors'] as List<dynamic>;
-        _pendingReceipts = dashboard['pending_receipts'] as List<dynamic>;
-        _recalls = dashboard['recalls'] as List<dynamic>;
-        _auditHistory = dashboard['audit_history'] as List<dynamic>;
-        _documents = dashboard['documents'] as List<dynamic>;
-        _notifications = dashboard['notifications'] as List<dynamic>;
-        _products = results[1] as List<dynamic>;
-        _packages = results[2] as List<dynamic>;
+        _pendingReceipts = rawReceipts;
+        _recalls = rawRecalls;
+        _auditHistory = rawAudit;
+        _documents = rawDocs;
+        _notifications = rawNotifs;
+        _products = rawProducts;
+        _packages = rawPackages;
       });
     } catch (error) {
       if (mounted) {
@@ -134,6 +196,15 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
               description.text.trim().isEmpty ? null : description.text.trim(),
         });
         await _load();
+        if (mounted) {
+          _tabController.animateTo(1);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Medicine registered. Proceed to create a batch.'),
+              backgroundColor: AppTheme.successGreen,
+            ),
+          );
+        }
       } catch (error) {
         if (mounted) _showError('Product registration failed: $error');
       }
@@ -234,6 +305,16 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
           'quantity_manufactured': int.parse(quantity.text.trim()),
         });
         await _load();
+        if (mounted) {
+          _tabController.animateTo(2);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  'Batch created successfully. Proceed to generate QR codes.'),
+              backgroundColor: AppTheme.successGreen,
+            ),
+          );
+        }
       } catch (error) {
         if (mounted) _showError('Batch creation failed: $error');
       }
@@ -275,91 +356,190 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
             batch['id'], int.parse(count.text.trim()));
         if (mounted) setState(() => _generatedPackages = packages);
         await _load();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                  '${packages.length} QR codes generated. You can now dispatch packages.'),
+              backgroundColor: AppTheme.successGreen,
+              action: SnackBarAction(
+                label: 'Go to Dispatch',
+                textColor: Colors.white,
+                onPressed: () => _tabController.animateTo(5),
+              ),
+            ),
+          );
+          await _showGeneratedQrDialog(batch, packages);
+        }
       } catch (error) {
-        if (mounted) _showError('QR code generation failed: $error');
+        String msg = error.toString();
+        if (error is DioException && error.response?.data is Map) {
+          final detail = error.response!.data['detail'];
+          if (detail != null) msg = detail.toString();
+        }
+        if (mounted) _showError('QR code generation failed: $msg');
       }
     }
     count.dispose();
   }
 
-  Future<void> _dispatchBatch() async {
-    final verifiedDistributors = _distributors
-        .where((organization) => organization['is_verified'] == true)
-        .toList();
-    final availablePackages = _packages.where((package) {
-      return package['status'] == 'manufactured' &&
-          _batches.any((batch) => batch['id'] == package['batch_id']);
-    }).toList();
-    if (verifiedDistributors.isEmpty || availablePackages.isEmpty) {
-      _showError(verifiedDistributors.isEmpty
-          ? 'No verified distributors are available.'
-          : 'No undispatched packages are available.');
-      return;
-    }
-
-    String? selectedDistributorId = verifiedDistributors.first['id'].toString();
-    final selectedSerials = <String>{};
-    final notesController = TextEditingController();
-    final selectedPackages = await showDialog<List<String>>(
+  Future<void> _showGeneratedQrDialog(
+    Map<String, dynamic> batch,
+    List<dynamic> packages,
+  ) async {
+    await showDialog(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Dispatch management'),
+      barrierDismissible: true,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          titlePadding: const EdgeInsets.fromLTRB(24, 20, 24, 12),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+          actionsPadding: const EdgeInsets.fromLTRB(24, 12, 24, 20),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0x1A0D3B66),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child:
+                    const Icon(Icons.qr_code_2, color: AppTheme.navy, size: 28),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Generated QR Codes (${packages.length})',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 18),
+                    ),
+                    Text(
+                      'Product: ${batch['product_name']} · Batch: ${batch['batch_number']}',
+                      style: const TextStyle(
+                          fontSize: 13, color: Color(0xFF64748B)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
           content: SizedBox(
-            width: 520,
-            height: 500,
+            width: 720,
+            height: 520,
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                DropdownButtonFormField<String>(
-                  initialValue: selectedDistributorId,
-                  isExpanded: true,
-                  decoration:
-                      const InputDecoration(labelText: 'Select distributor'),
-                  items: verifiedDistributors
-                      .map((organization) => DropdownMenuItem<String>(
-                            value: organization['id'].toString(),
-                            child: Text(organization['name'].toString()),
-                          ))
-                      .toList(),
-                  onChanged: (value) =>
-                      setDialogState(() => selectedDistributorId = value),
-                ),
-                const SizedBox(height: 12),
-                const Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Select serialized packages to dispatch'),
-                ),
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: availablePackages.length,
-                    itemBuilder: (context, index) {
-                      final package = availablePackages[index];
-                      final batch = _batches.firstWhere(
-                        (batch) => batch['id'] == package['batch_id'],
-                      );
-                      final serial = package['package_serial_id'].toString();
-                      return CheckboxListTile(
-                        value: selectedSerials.contains(serial),
-                        onChanged: (value) => setDialogState(() {
-                          if (value == true) {
-                            selectedSerials.add(serial);
-                          } else {
-                            selectedSerials.remove(serial);
-                          }
-                        }),
-                        title: Text(serial),
-                        subtitle: Text(
-                          '${batch['product_name']} · Batch ${batch['batch_number']}',
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0FDF4),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFBBF7D0)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.check_circle_outline,
+                          color: Color(0xFF16A34A), size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '${packages.length} serialized package QR codes generated successfully and registered to ledger. '
+                          'Ready for physical labeling and distributor dispatch.',
+                          style: const TextStyle(
+                              fontSize: 12.5, color: Color(0xFF166534)),
                         ),
-                        controlAffinity: ListTileControlAffinity.leading,
-                      );
-                    },
+                      ),
+                    ],
                   ),
                 ),
-                TextField(
-                  controller: notesController,
-                  decoration: const InputDecoration(
-                      labelText: 'Dispatch notes (optional)'),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: Scrollbar(
+                    thumbVisibility: true,
+                    child: SingleChildScrollView(
+                      child: Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        children: packages.map((package) {
+                          final serial =
+                              package['package_serial_id']?.toString() ?? '';
+                          final qrData =
+                              package['qr_code_data']?.toString() ?? serial;
+                          final status =
+                              package['status']?.toString() ?? 'manufactured';
+
+                          return Container(
+                            width: 215,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: AppTheme.border),
+                              boxShadow: const [
+                                BoxShadow(
+                                  color: Color(0x0A000000),
+                                  blurRadius: 4,
+                                  offset: Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                        color: const Color(0xFFE2E8F0)),
+                                  ),
+                                  child: QrImageView(
+                                    data: qrData,
+                                    size: 140,
+                                    version: QrVersions.auto,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                SelectableText(
+                                  serial,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 11,
+                                    color: AppTheme.navy,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFE0F2F1),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Text(
+                                    status.toUpperCase(),
+                                    style: const TextStyle(
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF00796B),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -367,20 +547,296 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
+              child: const Text('Close'),
             ),
-            ElevatedButton(
-              onPressed:
-                  selectedSerials.isEmpty || selectedDistributorId == null
-                      ? null
-                      : () => Navigator.pop(
-                            dialogContext,
-                            selectedSerials.toList(growable: false),
-                          ),
-              child: Text('Dispatch ${selectedSerials.length} packages'),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.deepTeal,
+                foregroundColor: Colors.white,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              ),
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                _tabController.animateTo(5); // Go to Dispatch Management
+              },
+              icon: const Icon(Icons.local_shipping_outlined, size: 18),
+              label: const Text('Proceed to Dispatch Management'),
             ),
           ],
-        ),
+        );
+      },
+    );
+  }
+
+  Future<void> _dispatchBatch() async {
+    final verifiedDistributors = _distributors
+        .where((organization) => organization['is_verified'] == true)
+        .toList();
+    if (verifiedDistributors.isEmpty) {
+      _showError(
+          'No verified distributors are available. Please onboard a distributor first.');
+      _tabController.animateTo(4); // Go to Distributors tab
+      return;
+    }
+    final availablePackages = _packages.where((package) {
+      return package['status'] == 'manufactured' &&
+          _batches.any((batch) => batch['id'] == package['batch_id']);
+    }).toList();
+
+    String? selectedDistributorId = verifiedDistributors.first['id'].toString();
+    final selectedSerials = <String>{};
+    final notesController = TextEditingController();
+
+    // Group available packages by batch
+    final Map<String, List<dynamic>> packagesByBatch = {};
+    for (final package in availablePackages) {
+      final batch = _batches.firstWhere(
+        (b) => b['id'] == package['batch_id'],
+        orElse: () => {'batch_number': 'Unknown', 'product_name': 'Unknown'},
+      );
+      final batchKey =
+          '${batch['product_name']} · Batch ${batch['batch_number']}';
+      packagesByBatch.putIfAbsent(batchKey, () => []).add(package);
+    }
+
+    final selectedPackages = await showDialog<List<String>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final allSerials = availablePackages
+              .map((p) => p['package_serial_id'].toString())
+              .toSet();
+          final isAllSelected = selectedSerials.length == allSerials.length &&
+              allSerials.isNotEmpty;
+
+          return AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.local_shipping_outlined, color: AppTheme.deepTeal),
+                SizedBox(width: 8),
+                Text('Dispatch Management — Manufacturer to Distributor'),
+              ],
+            ),
+            content: SizedBox(
+              width: 580,
+              height: 520,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedDistributorId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Select Verified Recipient Distributor',
+                      prefixIcon: Icon(Icons.business_outlined),
+                    ),
+                    items: verifiedDistributors
+                        .map((organization) => DropdownMenuItem<String>(
+                              value: organization['id'].toString(),
+                              child: Text(
+                                '${organization['name']} (${organization['license_number'] ?? 'Verified'})',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ))
+                        .toList(),
+                    onChanged: (value) =>
+                        setDialogState(() => selectedDistributorId = value),
+                  ),
+                  const SizedBox(height: 12),
+                  if (availablePackages.isEmpty) ...[
+                    Expanded(
+                      child: Center(
+                        child: Container(
+                          padding: const EdgeInsets.all(24),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                                color: AppTheme.warningAmber
+                                    .withValues(alpha: 0.4)),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.inventory_2_outlined,
+                                  size: 48, color: AppTheme.warningAmber),
+                              const SizedBox(height: 12),
+                              const Text(
+                                'No manufactured packages available to dispatch',
+                                style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: AppTheme.navy),
+                              ),
+                              const SizedBox(height: 8),
+                              const Text(
+                                'All registered batches have already been dispatched or need QR packages generated. '
+                                'Please create a batch and generate QR codes to prepare stock for dispatch.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    color: AppTheme.textSecondary),
+                              ),
+                              const SizedBox(height: 16),
+                              ElevatedButton.icon(
+                                onPressed: () {
+                                  Navigator.pop(dialogContext);
+                                  _tabController
+                                      .animateTo(2); // Go to Generate QR Code
+                                },
+                                icon: const Icon(Icons.qr_code_2),
+                                label: const Text('Go to Generate QR Codes'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ] else ...[
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Select packages (${selectedSerials.length}/${availablePackages.length})',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        TextButton.icon(
+                          onPressed: () {
+                            setDialogState(() {
+                              if (isAllSelected) {
+                                selectedSerials.clear();
+                              } else {
+                                selectedSerials.addAll(allSerials);
+                              }
+                            });
+                          },
+                          icon: Icon(
+                            isAllSelected
+                                ? Icons.deselect_outlined
+                                : Icons.select_all_outlined,
+                            size: 18,
+                          ),
+                          label: Text(
+                              isAllSelected ? 'Deselect All' : 'Select All'),
+                        ),
+                      ],
+                    ),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: ListView(
+                        children: packagesByBatch.entries.map((entry) {
+                          final batchLabel = entry.key;
+                          final batchPackages = entry.value;
+                          final batchSerials = batchPackages
+                              .map((p) => p['package_serial_id'].toString())
+                              .toSet();
+                          final isBatchAllSelected = batchSerials.every(
+                            (s) => selectedSerials.contains(s),
+                          );
+
+                          return Container(
+                            margin: const EdgeInsets.only(top: 8, bottom: 4),
+                            decoration: BoxDecoration(
+                              border: Border.all(color: AppTheme.border),
+                              borderRadius: BorderRadius.circular(8),
+                              color: Colors.grey.withValues(alpha: 0.03),
+                            ),
+                            child: ExpansionTile(
+                              initiallyExpanded: true,
+                              dense: true,
+                              title: Text(
+                                batchLabel,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                  color: AppTheme.navy,
+                                ),
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  TextButton(
+                                    style: TextButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 4),
+                                      minimumSize: Size.zero,
+                                      tapTargetSize:
+                                          MaterialTapTargetSize.shrinkWrap,
+                                    ),
+                                    onPressed: () {
+                                      setDialogState(() {
+                                        if (isBatchAllSelected) {
+                                          selectedSerials
+                                              .removeAll(batchSerials);
+                                        } else {
+                                          selectedSerials.addAll(batchSerials);
+                                        }
+                                      });
+                                    },
+                                    child: Text(
+                                      isBatchAllSelected
+                                          ? 'Deselect Batch'
+                                          : 'Select Batch (${batchPackages.length})',
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                  ),
+                                  const Icon(Icons.expand_more, size: 20),
+                                ],
+                              ),
+                              children: batchPackages.map((package) {
+                                final serial =
+                                    package['package_serial_id'].toString();
+                                return CheckboxListTile(
+                                  dense: true,
+                                  value: selectedSerials.contains(serial),
+                                  onChanged: (value) => setDialogState(() {
+                                    if (value == true) {
+                                      selectedSerials.add(serial);
+                                    } else {
+                                      selectedSerials.remove(serial);
+                                    }
+                                  }),
+                                  title: Text(serial,
+                                      style: const TextStyle(fontSize: 13)),
+                                  controlAffinity:
+                                      ListTileControlAffinity.leading,
+                                );
+                              }).toList(),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: notesController,
+                      decoration: const InputDecoration(
+                          labelText: 'Dispatch notes (optional)'),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
+              ),
+              if (availablePackages.isNotEmpty)
+                ElevatedButton(
+                  onPressed:
+                      selectedSerials.isEmpty || selectedDistributorId == null
+                          ? null
+                          : () => Navigator.pop(
+                                dialogContext,
+                                selectedSerials.toList(growable: false),
+                              ),
+                  child: Text('Dispatch ${selectedSerials.length} packages'),
+                ),
+            ],
+          );
+        },
       ),
     );
     final notes = notesController.text.trim();
@@ -404,6 +860,9 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
         ),
       );
       await _load();
+      if (mounted) {
+        _tabController.animateTo(6);
+      }
     } catch (error) {
       if (mounted) _showError('Dispatch failed: $error');
     }
@@ -818,6 +1277,10 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
   }
 
   Widget _buildQrTab() {
+    final displayPackages = _generatedPackages.isNotEmpty
+        ? _generatedPackages
+        : _packages.take(24).toList();
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -842,26 +1305,86 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
                 ),
               ),
             )),
-        if (_generatedPackages.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          const Text('Generated package QR codes',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
+        if (displayPackages.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.qr_code_2, color: AppTheme.navy, size: 24),
+                  const SizedBox(width: 8),
+                  Text(
+                    _generatedPackages.isNotEmpty
+                        ? 'Recently Generated QR Codes (${_generatedPackages.length})'
+                        : 'Batch QR Code Inventory (${_packages.length} packages)',
+                    style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.navy),
+                  ),
+                ],
+              ),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.deepTeal,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () => _tabController.animateTo(5), // Go to Dispatch
+                icon: const Icon(Icons.send_outlined, size: 16),
+                label: const Text('Go to Dispatch Management'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
           Wrap(
             spacing: 12,
             runSpacing: 12,
-            children: _generatedPackages.map((package) {
+            children: displayPackages.map((package) {
+              final serial = package['package_serial_id']?.toString() ?? '';
+              final qrData = package['qr_code_data']?.toString() ?? serial;
+              final status = package['status']?.toString() ?? 'manufactured';
               return SizedBox(
-                width: 190,
+                width: 200,
                 child: Card(
+                  elevation: 2,
                   child: Padding(
                     padding: const EdgeInsets.all(12),
                     child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        QrImageView(data: package['qr_code_data'], size: 140),
+                        Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: AppTheme.border),
+                          ),
+                          child: QrImageView(
+                            data: qrData,
+                            size: 140,
+                            version: QrVersions.auto,
+                          ),
+                        ),
                         const SizedBox(height: 8),
-                        SelectableText(package['package_serial_id'],
-                            textAlign: TextAlign.center),
+                        SelectableText(
+                          serial,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 11),
+                        ),
+                        const SizedBox(height: 4),
+                        Chip(
+                          label: Text(
+                            status,
+                            style: const TextStyle(
+                                fontSize: 10, fontWeight: FontWeight.w600),
+                          ),
+                          backgroundColor: status == 'manufactured'
+                              ? const Color(0xFFE0F2F1)
+                              : const Color(0xFFF1F5F9),
+                          visualDensity: VisualDensity.compact,
+                        ),
                       ],
                     ),
                   ),
@@ -874,33 +1397,379 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
     );
   }
 
-  Widget _buildDistributorsTab() {
-    if (_distributors.isEmpty) {
-      return const Center(child: Text('No registered distributors found.'));
-    }
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: _distributors.length,
-      itemBuilder: (context, index) {
-        final distributor = _distributors[index];
-        return Card(
-          child: ListTile(
-            leading: const Icon(Icons.local_shipping_outlined),
-            title: Text(distributor['name'].toString()),
-            subtitle: Text(
-              '${distributor['contact_email']}\n'
-              '${distributor['address']}\n'
-              'License ${distributor['license_number']}',
+  Future<void> _onboardDistributorDialog() async {
+    final nameController = TextEditingController();
+    final licenseController = TextEditingController();
+    final addressController = TextEditingController();
+    final emailController = TextEditingController();
+    final otpController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    bool otpSent = false;
+    bool otpSending = false;
+    String? otpFeedback;
+    String? demoOtpCode;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          Future<void> sendOtp() async {
+            final email = emailController.text.trim().toLowerCase();
+            if (email.isEmpty || !email.contains('@') || !email.contains('.')) {
+              setDialogState(() {
+                otpFeedback = 'Enter a valid authorized contact email first.';
+              });
+              return;
+            }
+            setDialogState(() {
+              otpSending = true;
+              otpFeedback = null;
+            });
+            try {
+              final res = await apiService.sendDistributorOtp(email);
+              setDialogState(() {
+                otpSent = true;
+                demoOtpCode = res['demo_code']?.toString();
+                if (res['email_delivered'] == true) {
+                  otpFeedback = '6-digit OTP code sent to $email.';
+                } else if (demoOtpCode != null) {
+                  otpFeedback =
+                      'Verification OTP: $demoOtpCode (Test Demo Mode)';
+                } else {
+                  otpFeedback = 'Verification code dispatched to $email.';
+                }
+              });
+            } catch (err) {
+              setDialogState(() {
+                otpFeedback = 'Failed to dispatch OTP: $err';
+              });
+            } finally {
+              setDialogState(() {
+                otpSending = false;
+              });
+            }
+          }
+
+          return AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.verified_user_outlined, color: AppTheme.deepTeal),
+                SizedBox(width: 8),
+                Text('Verify & Onboard New Distributor'),
+              ],
             ),
-            isThreeLine: true,
-            trailing: Chip(
-              label: Text(distributor['is_verified'] == true
-                  ? 'Verified'
-                  : 'Unverified'),
+            content: SizedBox(
+              width: 500,
+              child: Form(
+                key: formKey,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text(
+                        'Verify a registered distributor profile by sending an OTP to their registered authorized contact email. Once verified, the distributor account is linked and orders dispatched to them will appear on their dashboard.',
+                        style: TextStyle(
+                            fontSize: 13, color: AppTheme.textSecondary),
+                      ),
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: nameController,
+                        decoration: const InputDecoration(
+                          labelText: 'Distributor Organization Name',
+                          hintText: 'e.g. FastDist Global Logistics',
+                          prefixIcon: Icon(Icons.business_outlined),
+                        ),
+                        validator: (val) => val == null || val.trim().isEmpty
+                            ? 'Enter distributor name'
+                            : null,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: licenseController,
+                        decoration: const InputDecoration(
+                          labelText: 'Regulatory Wholesale Drug License Number',
+                          hintText: 'e.g. DIST-2024-9981 or WDL-4482',
+                          prefixIcon: Icon(Icons.badge_outlined),
+                        ),
+                        textCapitalization: TextCapitalization.characters,
+                        validator: (val) {
+                          if (val == null || val.trim().isEmpty) {
+                            return 'Enter regulatory license number';
+                          }
+                          if (val.trim().length < 5) {
+                            return 'License number must be at least 5 characters';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: addressController,
+                        decoration: const InputDecoration(
+                          labelText: 'Official Warehouse / Hub Address',
+                          hintText: 'e.g. 500 Logistics Blvd, Warehouse Bay 4',
+                          prefixIcon: Icon(Icons.location_on_outlined),
+                        ),
+                        validator: (val) => val == null || val.trim().isEmpty
+                            ? 'Enter verified warehouse address'
+                            : null,
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: emailController,
+                              keyboardType: TextInputType.emailAddress,
+                              decoration: const InputDecoration(
+                                labelText: 'Authorized Contact Email',
+                                hintText: 'e.g. distributor@pharmatrace.dev',
+                                prefixIcon: Icon(Icons.email_outlined),
+                              ),
+                              validator: (val) {
+                                if (val == null || val.trim().isEmpty) {
+                                  return 'Enter authorized contact email';
+                                }
+                                if (!val.contains('@') || !val.contains('.')) {
+                                  return 'Enter a valid email address';
+                                }
+                                return null;
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 14, vertical: 14),
+                              ),
+                              onPressed: otpSending ? null : sendOtp,
+                              icon: otpSending
+                                  ? const SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2, color: Colors.white),
+                                    )
+                                  : Icon(otpSent ? Icons.refresh : Icons.send,
+                                      size: 16),
+                              label: Text(otpSent ? 'Resend' : 'Send OTP'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (otpFeedback != null) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF0FDF4),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: AppTheme.border),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.info_outline,
+                                  size: 16, color: AppTheme.navy),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  otpFeedback!,
+                                  style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppTheme.navy),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      if (otpSent) ...[
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: otpController,
+                          keyboardType: TextInputType.number,
+                          maxLength: 6,
+                          decoration: const InputDecoration(
+                            labelText: 'Enter 6-Digit Email OTP',
+                            hintText: 'e.g. 123456',
+                            prefixIcon: Icon(Icons.security),
+                            helperText:
+                                'Verification code sent to distributor registered email',
+                          ),
+                          validator: (val) {
+                            if (val == null || val.trim().length != 6) {
+                              return 'Enter 6-digit verification code';
+                            }
+                            return null;
+                          },
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
             ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  if (formKey.currentState!.validate()) {
+                    Navigator.pop(ctx, true);
+                  }
+                },
+                icon: const Icon(Icons.check_circle_outline),
+                label: const Text('Verify & Confirm Distributor'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        final newDistributor = await apiService.onboardDistributor(
+          name: nameController.text.trim(),
+          licenseNumber: licenseController.text.trim().toUpperCase(),
+          address: addressController.text.trim(),
+          contactEmail: emailController.text.trim().toLowerCase(),
+          otpCode: otpController.text.trim().isNotEmpty
+              ? otpController.text.trim()
+              : null,
+        );
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Distributor "${newDistributor['name']}" verified successfully via OTP. Account linked and ready for dispatch!',
+            ),
+            backgroundColor: AppTheme.successGreen,
           ),
         );
-      },
+        await _load();
+      } catch (e) {
+        String errDetail =
+            'Verification failed. Please check the entered details or OTP code.';
+        if (mounted) _showError('Distributor verification: $errDetail');
+      }
+    }
+    nameController.dispose();
+    licenseController.dispose();
+    addressController.dispose();
+    emailController.dispose();
+    otpController.dispose();
+  }
+
+  Widget _buildDistributorsTab() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Verified Distributor Network',
+                    style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.navy),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${_distributors.length} licensed distributors authorized for batch dispatch and transit.',
+                    style: const TextStyle(color: AppTheme.textSecondary),
+                  ),
+                ],
+              ),
+            ),
+            ElevatedButton.icon(
+              onPressed: _onboardDistributorDialog,
+              icon: const Icon(Icons.add_business_outlined),
+              label: const Text('Verify New Distributor'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        if (_distributors.isEmpty)
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(
+                child: Text(
+                    'No verified distributors registered. Click "Verify New Distributor" above to add one.'),
+              ),
+            ),
+          )
+        else
+          ..._distributors.map((distributor) => Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                child: ListTile(
+                  leading: const CircleAvatar(
+                    backgroundColor: Color(0xFFE0F2F1),
+                    child: Icon(Icons.local_shipping_outlined,
+                        color: AppTheme.deepTeal),
+                  ),
+                  title: Text(distributor['name'].toString(),
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text(
+                    'Contact: ${distributor['contact_email']}\n'
+                    'Warehouse: ${distributor['address']}\n'
+                    'License: ${distributor['license_number']} · State Board Verified',
+                  ),
+                  isThreeLine: true,
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Chip(
+                        label: Text(
+                            distributor['is_verified'] == true
+                                ? 'Verified Partner'
+                                : 'Unverified',
+                            style: TextStyle(
+                                color: distributor['is_verified'] == true
+                                    ? AppTheme.successGreen
+                                    : AppTheme.warningAmber)),
+                        avatar: Icon(
+                            distributor['is_verified'] == true
+                                ? Icons.verified
+                                : Icons.hourglass_top,
+                            size: 18,
+                            color: distributor['is_verified'] == true
+                                ? AppTheme.successGreen
+                                : AppTheme.warningAmber),
+                        backgroundColor: distributor['is_verified'] == true
+                            ? const Color(0xFFE8F5E9)
+                            : const Color(0xFFFFFBEB),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        tooltip: 'Dispatch batch to this distributor',
+                        icon: const Icon(Icons.send_outlined,
+                            color: AppTheme.deepTeal),
+                        onPressed: () {
+                          _tabController
+                              .animateTo(5); // Navigate to Dispatch Management
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              )),
+      ],
     );
   }
 
@@ -930,9 +1799,7 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
               ),
               const SizedBox(height: 16),
               ElevatedButton.icon(
-                onPressed: availableCount == 0 || verifiedDistributorCount == 0
-                    ? null
-                    : _dispatchBatch,
+                onPressed: _dispatchBatch,
                 icon: const Icon(Icons.local_shipping_outlined),
                 label: const Text('Select distributor and dispatch'),
               ),
@@ -980,13 +1847,27 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
       children: [
         Padding(
           padding: const EdgeInsets.all(16),
-          child: Align(
-            alignment: Alignment.centerRight,
-            child: ElevatedButton.icon(
-              onPressed: _initiateRecall,
-              icon: const Icon(Icons.warning_amber),
-              label: const Text('Initiate recall'),
-            ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              OutlinedButton.icon(
+                onPressed: () {
+                  if (_batches.isEmpty) return;
+                  _showRecallSimulatorDialog(_batches.first['id'].toString(),
+                      _batches.first['batch_number']?.toString());
+                },
+                icon: const Icon(Icons.account_tree_outlined),
+                label: const Text('Recall Impact Simulator'),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.errorRed),
+                onPressed: _initiateRecall,
+                icon: const Icon(Icons.warning_amber),
+                label: const Text('Initiate recall'),
+              ),
+            ],
           ),
         ),
         Expanded(
@@ -1000,21 +1881,44 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
                     final recall = _recalls[index];
                     return Card(
                       child: ListTile(
-                        leading: const Icon(Icons.warning_amber),
+                        leading: const Icon(Icons.warning_amber,
+                            color: AppTheme.errorRed),
                         title: Text('Batch ${recall['batch_number']}'),
                         subtitle: Text(
                           '${recall['severity']} · ${recall['affected_package_count']} '
                           'packages · ${recall['recall_reason']}',
                         ),
                         isThreeLine: true,
-                        trailing:
-                            Chip(label: Text(recall['status'].toString())),
+                        trailing: ElevatedButton.icon(
+                          onPressed: () => _showRecallSimulatorDialog(
+                            recall['batch_id']?.toString() ?? '',
+                            recall['batch_number']?.toString(),
+                          ),
+                          icon: const Icon(Icons.account_tree, size: 16),
+                          label: const Text('View Impact'),
+                        ),
                       ),
                     );
                   },
                 ),
         ),
       ],
+    );
+  }
+
+  void _showRecallSimulatorDialog(String batchId, String? batchNumber) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 880, maxHeight: 680),
+          child: RecallImpactSimulatorView(
+            batchId: batchId,
+            batchNumber: batchNumber,
+            onBack: () => Navigator.pop(ctx),
+          ),
+        ),
+      ),
     );
   }
 
@@ -1135,83 +2039,80 @@ class _ManufacturerToolsState extends State<ManufacturerTools> {
       Tab(text: 'Document Management', icon: Icon(Icons.description_outlined)),
       Tab(text: 'Notifications', icon: Icon(Icons.notifications_outlined)),
     ];
-    return DefaultTabController(
-      key: ValueKey<int>(widget.initialTabIndex),
-      length: tabs.length,
-      initialIndex: widget.initialTabIndex.clamp(0, tabs.length - 1),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'Manufacturer dashboard',
-                    style: TextStyle(
-                      fontSize: 21,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.navy,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Manufacturer dashboard',
+                  style: TextStyle(
+                    fontSize: 21,
+                    fontWeight: FontWeight.bold,
+                    color: AppTheme.navy,
+                  ),
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed: _load,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Refresh'),
+              ),
+            ],
+          ),
+        ),
+        TabBar(
+          controller: _tabController,
+          isScrollable: true,
+          tabAlignment: TabAlignment.start,
+          tabs: tabs,
+        ),
+        Expanded(
+          child: TabBarView(
+            controller: _tabController,
+            children: [
+              _buildOverviewTab(),
+              _buildCreateBatchTab(),
+              _buildQrTab(),
+              _buildInventoryTab(),
+              _buildDistributorsTab(),
+              _buildDispatchTab(),
+              _buildPendingReceiptsTab(),
+              Center(
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.qr_code_scanner, size: 48),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Scan a package QR code to verify its batch registration and current status.',
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 16),
+                        ElevatedButton.icon(
+                          onPressed: widget.onVerifyBatch,
+                          icon: const Icon(Icons.qr_code_scanner),
+                          label: const Text('Open batch verification'),
+                        ),
+                      ],
                     ),
                   ),
                 ),
-                OutlinedButton.icon(
-                  onPressed: _load,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Refresh'),
-                ),
-              ],
-            ),
+              ),
+              _buildRecallTab(),
+              _buildAuditTab(),
+              _buildDocumentsTab(),
+              _buildNotificationsTab(),
+            ],
           ),
-          TabBar(
-            isScrollable: true,
-            tabAlignment: TabAlignment.start,
-            tabs: tabs,
-          ),
-          Expanded(
-            child: TabBarView(
-              children: [
-                _buildOverviewTab(),
-                _buildCreateBatchTab(),
-                _buildQrTab(),
-                _buildInventoryTab(),
-                _buildDistributorsTab(),
-                _buildDispatchTab(),
-                _buildPendingReceiptsTab(),
-                Center(
-                  child: Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.qr_code_scanner, size: 48),
-                          const SizedBox(height: 12),
-                          const Text(
-                            'Scan a package QR code to verify its batch registration and current status.',
-                            textAlign: TextAlign.center,
-                          ),
-                          const SizedBox(height: 16),
-                          ElevatedButton.icon(
-                            onPressed: widget.onVerifyBatch,
-                            icon: const Icon(Icons.qr_code_scanner),
-                            label: const Text('Open batch verification'),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                _buildRecallTab(),
-                _buildAuditTab(),
-                _buildDocumentsTab(),
-                _buildNotificationsTab(),
-              ],
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

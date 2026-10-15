@@ -23,6 +23,7 @@ class _LoginPageState extends State<LoginPage> {
       TextEditingController(text: "distributor@pharmatrace.dev");
   final _passwordController = TextEditingController(text: "DevDist2024!");
   bool _isLoading = false;
+  bool _obscurePassword = true;
   String? _errorMessage;
 
   void _submitLogin() async {
@@ -38,8 +39,19 @@ class _LoginPageState extends State<LoginPage> {
       );
       widget.onLoginSuccess();
     } catch (e) {
+      String msg = "Authentication failed. Check credentials.";
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains("disabled") ||
+          errStr.contains("pending") ||
+          errStr.contains("review") ||
+          errStr.contains("403")) {
+        msg =
+            "Account is pending approval or disabled. Once an administrator approves or a partner verifies your organization, access will be enabled.";
+      } else if (errStr.contains("incorrect") || errStr.contains("401")) {
+        msg = "Incorrect email or password. Please verify your credentials.";
+      }
       setState(() {
-        _errorMessage = "Authentication failed. Check credentials.";
+        _errorMessage = msg;
       });
     } finally {
       setState(() {
@@ -111,10 +123,27 @@ class _LoginPageState extends State<LoginPage> {
                     const SizedBox(height: 16),
                     TextField(
                       controller: _passwordController,
-                      obscureText: true,
-                      decoration: const InputDecoration(
-                          labelText: "Password",
-                          prefixIcon: Icon(Icons.key_outlined)),
+                      obscureText: _obscurePassword,
+                      decoration: InputDecoration(
+                        labelText: "Password",
+                        prefixIcon: const Icon(Icons.key_outlined),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _obscurePassword
+                                ? Icons.visibility_outlined
+                                : Icons.visibility_off_outlined,
+                            color: AppTheme.textSecondary,
+                          ),
+                          onPressed: () {
+                            setState(() {
+                              _obscurePassword = !_obscurePassword;
+                            });
+                          },
+                          tooltip: _obscurePassword
+                              ? 'Show password'
+                              : 'Hide password',
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 24),
                     ElevatedButton(

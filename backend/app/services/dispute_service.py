@@ -57,3 +57,35 @@ class DisputeService:
         await db.refresh(dispute)
         return dispute
 
+    @staticmethod
+    async def update_investigation(
+        db: AsyncSession,
+        dispute_id: str,
+        user: User,
+        status: DisputeStatus,
+        comments: Optional[str] = None,
+        evidence_hash: Optional[str] = None,
+        evidence_reference: Optional[str] = None
+    ) -> Dispute:
+        """
+        Feature C: Quantity Discrepancy Investigation.
+        Allows parties to submit evidence with SHA-256 integrity hash,
+        add investigation comments, and update dispute state (Pending, Under Investigation, Resolved, Escalated).
+        """
+        dispute = await db.get(Dispute, dispute_id)
+        if not dispute:
+            raise HTTPException(status_code=404, detail="Dispute not found")
+
+        dispute.status = status
+        if evidence_hash:
+            dispute.evidence_hash = evidence_hash
+        if evidence_reference:
+            dispute.evidence_reference = evidence_reference
+        if comments:
+            existing = dispute.resolution_notes or ""
+            timestamp_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            dispute.resolution_notes = f"{existing}\n[{timestamp_str}] {user.full_name}: {comments}".strip()
+
+        await db.commit()
+        await db.refresh(dispute)
+        return dispute

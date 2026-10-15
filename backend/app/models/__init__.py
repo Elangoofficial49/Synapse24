@@ -301,6 +301,9 @@ class Dispute(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     dispute_reason: Mapped[str] = mapped_column(String(500), nullable=False)
     expected_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     actual_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_of_measure: Mapped[str] = mapped_column(String(50), default="units", nullable=False)
+    evidence_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True) # SHA-256 hash of evidence document
+    evidence_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[DisputeStatus] = mapped_column(Enum(DisputeStatus), default=DisputeStatus.OPEN, nullable=False)
     resolution_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     resolved_by: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
@@ -337,6 +340,17 @@ class Recall(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     status: Mapped[RecallStatus] = mapped_column(Enum(RecallStatus), default=RecallStatus.ACTIVE, nullable=False)
     investigation_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class RecallAcknowledgement(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "recall_acknowledgements"
+
+    recall_id: Mapped[str] = mapped_column(String(36), ForeignKey("recalls.id"), nullable=False)
+    organization_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
+    acknowledged_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    quarantined_quantity: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    response_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    blockchain_tx_ref: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
 
 class Notification(Base, UUIDPrimaryKeyMixin):

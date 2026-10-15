@@ -7,7 +7,7 @@ from sqlalchemy import or_, select
 from app.db.session import get_db
 from app.core.permissions import get_current_user
 from app.models import (
-    AlertReviewStatus, Batch, CustodyEvent, Dispute, Organization, OrgType,
+    AlertReviewStatus, Batch, BatchStatus, CustodyEvent, Dispute, Organization, OrgType,
     PackageStatus, Product, QRScanEvent, Recall, RecallStatus, Shipment,
     ShipmentItem, ShipmentStatus, SerializedPackage, SuspiciousActivityAlert,
     User, UserRole,
@@ -643,3 +643,106 @@ async def dispense_package(
         "notes": custody_event.notes,
     }
 
+
+@router.post("/sync-offline-receipts")
+async def sync_offline_receipts(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Feature D: Offline-First Receipt Capture Synchronization.
+    Re-validates authorization, shipment state, batch recall status,
+    and idempotency before submitting authorized blockchain transaction.
+    """
+    receipts = payload.get("receipts", [])
+    results = []
+
+    for item in receipts:
+        event_id = item.get("event_id") or item.get("idempotency_key")
+        shipment_id = item.get("shipment_id")
+        actual_qty = int(item.get("actual_quantity_received", 0))
+        scanned_serials = item.get("scanned_package_serial_ids", [])
+        notes = item.get("notes")
+        device_timestamp = item.get("device_timestamp")
+
+        shipment = await db.get(Shipment, shipment_id)
+        if not shipment:
+            results.append({
+                "event_id": event_id,
+                "shipment_id": shipment_id,
+                "status": "FAILED",
+                "error": "Shipment not found on the server registry.",
+                "requires_manual_review": False
+            })
+            continue
+
+        # Check for already processed / duplicate submission (idempotency)
+        if shipment.status in (ShipmentStatus.RECEIVED, ShipmentStatus.PARTIALLY_RECEIVED, ShipmentStatus.REJECTED):
+            results.append({
+                "event_id": event_id,
+                "shipment_id": shipment_id,
+                "status": "ALREADY_PROCESSED",
+                "message": f"Shipment receipt was already recorded with status: {shipment.status.value}",
+                "requires_manual_review": False
+            })
+            continue
+
+        # Re-validate recipient organization
+        if shipment.receiver_org_id != current_user.organization_id:
+            results.append({
+                "event_id": event_id,
+                "shipment_id": shipment_id,
+                "status": "CONFLICT",
+                "error": "Unauthorized recipient organization.",
+                "requires_manual_review": True
+            })
+            continue
+
+        # Re-validate batch recall status while device was offline
+        # If any package was recalled while offline, flag for review!
+        batch_items = await db.execute(
+            select(Batch.status)
+            .join(SerializedPackage, Batch.id == SerializedPackage.batch_id)
+            .join(ShipmentItem, SerializedPackage.id == ShipmentItem.package_id)
+            .where(ShipmentItem.shipment_id == shipment.id)
+        )
+        batch_statuses = [s for (s,) in batch_items.all()]
+        if any(bs == BatchStatus.RECALLED for bs in batch_statuses):
+            results.append({
+                "event_id": event_id,
+                "shipment_id": shipment_id,
+                "status": "CONFLICT",
+                "error": "CRITICAL CONFLICT: A batch in this shipment was RECALLED while offline. Transfer restricted.",
+                "requires_manual_review": True
+            })
+            continue
+
+        # Process valid receipt through CustodyService
+        try:
+            res = await CustodyService.process_shipment_receipt(
+                db,
+                shipment_id=shipment_id,
+                receiver=current_user,
+                actual_quantity_received=actual_qty,
+                scanned_serial_ids=scanned_serials if scanned_serials else None,
+                notes=f"[Offline Sync - captured at {device_timestamp or 'device'}] {notes or ''}".strip()
+            )
+            results.append({
+                "event_id": event_id,
+                "shipment_id": shipment_id,
+                "status": "SYNCHRONIZED",
+                "blockchain_tx_ref": res.get("tx_reference"),
+                "discrepancy_detected": res.get("discrepancy"),
+                "requires_manual_review": False
+            })
+        except Exception as ex:
+            results.append({
+                "event_id": event_id,
+                "shipment_id": shipment_id,
+                "status": "FAILED",
+                "error": str(ex),
+                "requires_manual_review": True
+            })
+
+    return {"synced_count": sum(1 for r in results if r["status"] == "SYNCHRONIZED"), "results": results}

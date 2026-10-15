@@ -30,7 +30,7 @@ async def list_products(
     stmt = select(Product)
     if current_user.role != UserRole.ADMIN:
         stmt = stmt.where(Product.manufacturer_id == current_user.organization_id)
-    result = await db.execute(stmt.order_by(Product.name))
+    result = await db.execute(stmt.order_by(Product.created_at.desc()))
     return result.scalars().all()
 
 @router.post("/batches", response_model=BatchResponse)
@@ -79,7 +79,7 @@ async def list_packages(
         stmt = stmt.where(SerializedPackage.batch_id == batch_id)
     if current_user.role != UserRole.ADMIN:
         stmt = stmt.where(Product.manufacturer_id == current_user.organization_id)
-    result = await db.execute(stmt.limit(100))
+    result = await db.execute(stmt.order_by(SerializedPackage.created_at.desc()).limit(1000))
     return result.scalars().all()
 
 @router.get("/packages/{serial_id}/qr-code")

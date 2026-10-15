@@ -113,6 +113,17 @@ async def list_disputes(
     result = await db.execute(select(Dispute).order_by(Dispute.created_at.desc()))
     return result.scalars().all()
 
+@router.get("/disputes/{dispute_id}", response_model=DisputeResponse)
+async def get_dispute(
+    dispute_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    dispute = await db.get(Dispute, dispute_id)
+    if not dispute:
+        raise HTTPException(status_code=404, detail="Dispute not found")
+    return dispute
+
 @router.post("/disputes/{dispute_id}/resolve", response_model=DisputeResponse)
 async def resolve_dispute(
     dispute_id: str,
@@ -128,6 +139,41 @@ async def resolve_dispute(
         status=payload.status,
         correction_justification=payload.correction_justification
     )
+
+
+@router.put("/disputes/{dispute_id}/investigate")
+async def update_dispute_investigation(
+    dispute_id: str,
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Feature C: Discrepancy Investigation Workflow.
+    Update status, record evidence hash, and append discussion log.
+    """
+    status_str = payload.get("status", "under_investigation").lower()
+    status_map = {
+        "open": DisputeStatus.OPEN,
+        "under_investigation": DisputeStatus.UNDER_INVESTIGATION,
+        "resolved": DisputeStatus.RESOLVED,
+        "escalated": DisputeStatus.ESCALATED,
+    }
+    status = status_map.get(status_str, DisputeStatus.UNDER_INVESTIGATION)
+    comments = payload.get("comments") or payload.get("investigation_notes")
+    evidence_hash = payload.get("evidence_hash")
+    evidence_reference = payload.get("evidence_reference")
+
+    return await DisputeService.update_investigation(
+        db,
+        dispute_id=dispute_id,
+        user=current_user,
+        status=status,
+        comments=comments,
+        evidence_hash=evidence_hash,
+        evidence_reference=evidence_reference
+    )
+
 
 # Recalls
 @router.post("/recalls", response_model=RecallResponse)
@@ -149,3 +195,38 @@ async def list_recalls(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Recall).order_by(Recall.created_at.desc()))
     return result.scalars().all()
 
+
+@router.get("/recalls/{batch_id}/impact")
+async def get_recall_impact(
+    batch_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Feature B: Recall Impact Simulator.
+    Traces affected batch downstream through distributors and pharmacies,
+    reporting actual recorded quantities, receipt status, and acknowledgement status.
+    """
+    return await RecallService.get_recall_impact_simulation(db, batch_id)
+
+
+@router.post("/recalls/{recall_id}/acknowledge")
+async def acknowledge_recall_directive(
+    recall_id: str,
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Downstream Recall Response:
+    Distributor / Pharmacy marks affected stock as quarantined and records confirmation.
+    """
+    quarantined_qty = int(payload.get("quarantined_quantity", 0))
+    notes = payload.get("response_notes")
+    return await RecallService.acknowledge_recall(
+        db,
+        recall_id=recall_id,
+        user=current_user,
+        quarantined_quantity=quarantined_qty,
+        response_notes=notes
+    )

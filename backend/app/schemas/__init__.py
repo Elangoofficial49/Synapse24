@@ -185,6 +185,9 @@ class PackageVerificationResponse(BaseModel):
     is_quarantined: bool = False
     current_custodian: Optional[str] = None
     warning_message: Optional[str] = None
+    verification_status: str = "VERIFIED" # VERIFIED, DUPLICATE_SCAN, CUSTODY_MISMATCH, INVALID_QR, RECALLED, QUARANTINED, EXPIRED, PENDING_VERIFICATION
+    verification_reason: Optional[str] = None
+    blockchain_tx_ref: Optional[str] = None
     custody_events_count: int = 0
     recent_events: List[Dict[str, Any]] = []
 

@@ -192,6 +192,57 @@ class ApiService {
     return response.data;
   }
 
+  Future<Map<String, dynamic>> sendPharmacyOtp(String contactEmail) async {
+    final response =
+        await dio.post('/organizations/pharmacies/send-otp', data: {
+      'contact_email': contactEmail,
+    });
+    return Map<String, dynamic>.from(response.data);
+  }
+
+  Future<Map<String, dynamic>> onboardPharmacy({
+    required String name,
+    required String licenseNumber,
+    required String address,
+    required String contactEmail,
+    String? otpCode,
+  }) async {
+    final response = await dio.post('/organizations/pharmacies/onboard', data: {
+      'name': name,
+      'license_number': licenseNumber,
+      'address': address,
+      'contact_email': contactEmail,
+      if (otpCode != null && otpCode.isNotEmpty) 'otp_code': otpCode,
+    });
+    return Map<String, dynamic>.from(response.data);
+  }
+
+  Future<Map<String, dynamic>> sendDistributorOtp(String contactEmail) async {
+    final response =
+        await dio.post('/organizations/distributors/send-otp', data: {
+      'contact_email': contactEmail,
+    });
+    return Map<String, dynamic>.from(response.data);
+  }
+
+  Future<Map<String, dynamic>> onboardDistributor({
+    required String name,
+    required String licenseNumber,
+    required String address,
+    required String contactEmail,
+    String? otpCode,
+  }) async {
+    final response =
+        await dio.post('/organizations/distributors/onboard', data: {
+      'name': name,
+      'license_number': licenseNumber,
+      'address': address,
+      'contact_email': contactEmail,
+      if (otpCode != null && otpCode.isNotEmpty) 'otp_code': otpCode,
+    });
+    return Map<String, dynamic>.from(response.data);
+  }
+
   Future<List<dynamic>> getWholesalerPartners() async {
     final response = await dio.get('/organizations/partners');
     return response.data;
@@ -301,6 +352,50 @@ class ApiService {
       'package_serial_id': packageSerialId,
       'reason': reason,
       'severity': severity,
+    });
+    return Map<String, dynamic>.from(response.data);
+  }
+
+  // Feature B: Recall Impact Simulator
+  Future<Map<String, dynamic>> getRecallImpact(String batchId) async {
+    final response = await dio.get('/recalls/$batchId/impact');
+    return Map<String, dynamic>.from(response.data);
+  }
+
+  Future<Map<String, dynamic>> acknowledgeRecall(
+    String recallId, {
+    required int quarantinedQuantity,
+    String? responseNotes,
+  }) async {
+    final response = await dio.post('/recalls/$recallId/acknowledge', data: {
+      'quarantined_quantity': quarantinedQuantity,
+      'response_notes': responseNotes,
+    });
+    return Map<String, dynamic>.from(response.data);
+  }
+
+  // Feature C: Quantity Discrepancy Investigation
+  Future<Map<String, dynamic>> updateDisputeInvestigation(
+    String disputeId, {
+    required String status,
+    String? comments,
+    String? evidenceHash,
+    String? evidenceReference,
+  }) async {
+    final response = await dio.put('/disputes/$disputeId/investigate', data: {
+      'status': status,
+      'comments': comments,
+      'evidence_hash': evidenceHash,
+      'evidence_reference': evidenceReference,
+    });
+    return Map<String, dynamic>.from(response.data);
+  }
+
+  // Feature D: Offline-First Sync
+  Future<Map<String, dynamic>> syncOfflineReceipts(
+      List<Map<String, dynamic>> receipts) async {
+    final response = await dio.post('/shipments/sync-offline-receipts', data: {
+      'receipts': receipts,
     });
     return Map<String, dynamic>.from(response.data);
   }

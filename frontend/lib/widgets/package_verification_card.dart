@@ -9,9 +9,42 @@ class PackageVerificationCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isValid = result['is_valid'] == true;
-    final warning = result['warning_message'] as String?;
+    final verificationStatus = (result['verification_status'] as String?) ??
+        (isValid ? 'VERIFIED' : 'INVALID_QR');
+    final verificationReason = result['verification_reason'] as String?;
+    final blockchainTxRef = result['blockchain_tx_ref'] as String?;
     final events = (result['recent_events'] as List<dynamic>?) ?? const [];
-    final accent = isValid ? AppTheme.successGreen : AppTheme.errorRed;
+
+    Color statusColor;
+    IconData statusIcon;
+
+    switch (verificationStatus) {
+      case 'VERIFIED':
+        statusColor = AppTheme.successGreen;
+        statusIcon = Icons.verified_outlined;
+        break;
+      case 'DUPLICATE_SCAN':
+        statusColor = AppTheme.warningAmber;
+        statusIcon = Icons.repeat;
+        break;
+      case 'CUSTODY_MISMATCH':
+        statusColor = AppTheme.warningAmber;
+        statusIcon = Icons.swap_horiz;
+        break;
+      case 'RECALLED':
+      case 'EXPIRED':
+      case 'INVALID_QR':
+        statusColor = AppTheme.errorRed;
+        statusIcon = Icons.gpp_bad_outlined;
+        break;
+      case 'QUARANTINED':
+        statusColor = Colors.purple;
+        statusIcon = Icons.pause_circle_outline;
+        break;
+      default:
+        statusColor = AppTheme.navy;
+        statusIcon = Icons.info_outline;
+    }
 
     return Card(
       child: Padding(
@@ -21,38 +54,69 @@ class PackageVerificationCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(isValid ? Icons.verified_outlined : Icons.error_outline,
-                    color: accent),
+                Icon(statusIcon, color: statusColor, size: 28),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: Text(
-                    isValid ? 'Verified package' : 'Package not verified',
-                    style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: accent),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        verificationStatus.replaceAll('_', ' '),
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: statusColor,
+                        ),
+                      ),
+                      if (blockchainTxRef != null)
+                        Text(
+                          'Ledger: $blockchainTxRef',
+                          style: const TextStyle(
+                              fontSize: 11, color: AppTheme.deepTeal),
+                        ),
+                    ],
                   ),
                 ),
                 if (result['status'] != null)
                   Chip(
-                      label: Text(result['status']
+                    label: Text(
+                      result['status']
                           .toString()
                           .replaceAll('_', ' ')
-                          .toUpperCase())),
+                          .toUpperCase(),
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ),
               ],
             ),
-            if (warning != null && warning.isNotEmpty) ...[
+            if (verificationReason != null &&
+                verificationReason.isNotEmpty) ...[
               const SizedBox(height: 12),
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: AppTheme.errorRed.withValues(alpha: 0.08),
+                  color: statusColor.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: statusColor.withValues(alpha: 0.3)),
                 ),
-                child: Text(warning,
-                    style: const TextStyle(
-                        color: AppTheme.errorRed, fontWeight: FontWeight.w600)),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.info_outline, color: statusColor, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        verificationReason,
+                        style: TextStyle(
+                          color: statusColor,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
             if (isValid) ...[
